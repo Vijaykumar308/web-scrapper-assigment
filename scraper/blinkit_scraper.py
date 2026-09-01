@@ -9,6 +9,7 @@ from .base import BaseScraper
 from .config import CITY_PINCODES
 from .models import Product
 from .exceptions import ScraperError
+from .validators import clean_price, clean_text, slugify
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +39,13 @@ class BlinkitScraper(BaseScraper):
                 raise ScraperError(f"Blinkit returned HTTP {response.status}")
             self._apply_location(page)
             page.wait_for_timeout(1500)
-            records = page.locator("a[href]").evaluate_all("""anchors => anchors.map(anchor => {
-                const href = anchor.href;
-                const text = anchor.closest('div')?.innerText || anchor.innerText || '';
-                return { href, text };
-            }).filter(item => item.href.includes('/prn/') && item.text.trim().length > 10)""")
+            records = page.locator("div[role='button'][id]").evaluate_all("""cards => cards.map(card => {
+                const name = card.querySelector('[class*="line-clamp-2"]')?.innerText || '';
+                const pack = card.querySelector('[class*="line-clamp-1"]')?.innerText || '';
+                const prices = [...card.querySelectorAll('div')].map(node => node.innerText.trim())
+                    .filter(value => /^₹[\\d,]+(?:\\.\\d+)?$/.test(value));
+                return { id: card.id, name, pack, prices, text: card.innerText };
+            }).filter(item => /^\\d+$/.test(item.id) && item.name.trim())""")
             products = self._products_from_records(records)
             if not products:
                 raise ScraperError("Blinkit returned no product detail links; location or anti-bot verification may be required")
@@ -71,20 +74,20 @@ class BlinkitScraper(BaseScraper):
         products: list[Product] = []
         seen: set[str] = set()
         for record in records:
-            url = str(record.get("href", ""))
+            name = clean_text(record.get("name")) or self.query
+            product_id = clean_text(record.get("id"))
+            if not product_id:
+                continue
+            url = f"https://blinkit.com/prn/{slugify(name)}/prid/{product_id}"
             if url in seen:
                 continue
             seen.add(url)
-            text = " ".join(str(record.get("text", "")).split())
-            import re
-
-            prices = re.findall(r"(?:₹|Rs\.?\s*)\s*([\d,]+(?:\.\d+)?)", text, re.IGNORECASE)
-            product_name = text.split("₹", 1)[0].strip()[:200]
             products.append(self.product_from_payload({
-                "product_name": product_name or self.query,
-                "selling_price": prices[0] if prices else None,
-                "mrp": prices[1] if len(prices) > 1 else None,
+                "product_name": name,
+                "selling_price": clean_price((record.get("prices") or [None])[0]),
+                "mrp": clean_price((record.get("prices") or [None, None])[1]),
                 "availability": "In stock",
+                "pack_size": clean_text(record.get("pack")),
                 "product_url": url,
             }, self.platform, self.city))
         return products
