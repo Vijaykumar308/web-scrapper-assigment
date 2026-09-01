@@ -1,0 +1,14 @@
+AWS ARCHITECTURE
+
+Client -> CloudFront (optional for a web client) -> API Gateway or ALB -> auto-scaled Flask containers on ECS Fargate (or Elastic Beanstalk) -> S3 for image objects. Store image metadata, ownership, status, and object keys in RDS when relational queries/transactions matter, or DynamoDB for high-volume key-value access. Put SQS between the API and image workers when uploads need asynchronous processing; workers can run on ECS or Lambda. The API should return a job ID, upload directly to S3 with a presigned URL, and persist metadata after validation. CloudFront serves images, not the API's private writes.
+
+EC2 vs Lambda: EC2 gives persistent, configurable servers and predictable long-running workloads; Lambda is event-driven, short-lived, and scales without server management.
+RDS vs DynamoDB: RDS is relational SQL with joins and transactions; DynamoDB is a managed, horizontally scalable key-value/document store designed around access patterns.
+S3 vs EFS: S3 is durable object storage accessed over APIs; EFS is a shared POSIX filesystem mounted by compute resources.
+
+LAMBDA SQS -> DYNAMODB TIMEOUT CHECKLIST
+1. Start with CloudWatch logs, duration, timeout count, throttles, iterator age, and SQS receive/delete metrics. Capture the failing message ID and downstream latency.
+2. Ensure Lambda timeout is longer than the normal worst-case batch processing time and SQS visibility timeout is longer than Lambda timeout, with a redrive policy for poison messages.
+3. Check DynamoDB throttled requests, consumed capacity, hot partition keys, and provisioned/on-demand limits. Add retries with jitter and verify the table/index permissions.
+4. If Lambda is in a VPC, verify subnet routes, security groups, DNS, and NAT gateway access. DynamoDB VPC endpoints can avoid unnecessary NAT dependency.
+5. Reduce SQS batch size until processing completes comfortably, then tune concurrency and reserved concurrency. Confirm IAM permissions for ReceiveMessage, DeleteMessage, and PutItem/UpdateItem; log authorization failures rather than swallowing them.
